@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "0rcM0d-xe8_n5E1XSTwMX"
+uri = "file://attached_assets/bot9_fixed.zip"
+type = "unspecified"
+title = "bot9_fixed.zip — исправленный бот"

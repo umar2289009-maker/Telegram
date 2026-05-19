@@ -155,6 +155,16 @@ init_db()
 _КЭШСТАТОВ: dict = {}   # user_id -> data (живые данные)
 _ДБ_СНИМОК: dict = {}   # user_id -> json-строка последнего сохранения в БД
 
+def _прогреть_кэш():
+    """Загружает всех игроков из БД в память при старте — один раз."""
+    rows = _выполнить("SELECT user_id, data FROM players", fetch="all") or []
+    for row in rows:
+        uid = row["user_id"]
+        data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+        _КЭШСТАТОВ[uid] = data
+        _ДБ_СНИМОК[uid] = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    log.info(f"Кэш игроков загружен: {len(_КЭШСТАТОВ)} игроков ✅")
+
 ОБНОВЛЕНИЯ = [
     {
         "версия": "v1.0",
@@ -3348,6 +3358,7 @@ def сидировать_kolik_если_есть():
     except Exception as e:
         log.error(f"Ошибка сидирования Kolik: {e}")
 
+_прогреть_кэш()
 сидировать_kolik_если_есть()
 _прогреть_рулетки()
 _прогреть_дуэли()
