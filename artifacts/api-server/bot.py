@@ -1554,6 +1554,82 @@ def команда_история(message):
     except Exception as e:
         log.error(f"/история error: {e}")
 
+@bot.message_handler(commands=["экспорт"])
+def команда_экспорт(message):
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        if not is_admin(user_id):
+            bot.send_message(chat_id, "❌ Только для Kolika 👑")
+            return
+
+        статы = загрузить_статы()
+        if not статы:
+            bot.send_message(chat_id, "📭 Игроков пока нет.")
+            return
+
+        строки = []
+        строки.append(f"👥 ИГРОКИ ({len(статы)} чел.) | {date.today()}\n")
+        строки.append("─" * 36)
+
+        # Сортируем по мэлкоинам
+        сортированные = sorted(
+            статы.items(),
+            key=lambda x: x[1].get("мэлкоины", 0),
+            reverse=True
+        )
+
+        for i, (uid, д) in enumerate(сортированные, 1):
+            имя = д.get("имя", "???")
+            монеты = д.get("мэлкоины", 0)
+            игр = д.get("игр", 0)
+            выжил = д.get("выжил", 0)
+            рекорд = д.get("рекорд", 0)
+            ачивки = len(д.get("ачивки", []))
+            титул = д.get("активный_титул") or "—"
+            вр = f"{round(выжил/игр*100)}%" if игр > 0 else "—"
+
+            строки.append(
+                f"\n#{i} {имя} (id: {uid})\n"
+                f"  💰 {монеты} мэлкоинов | 🎭 {титул}\n"
+                f"  🔫 {игр} игр | выжил {выжил} | рекорд {рекорд} | вр {вр}\n"
+                f"  🏅 ачивок: {ачивки}"
+            )
+
+        строки.append(f"\n{'─'*36}")
+        строки.append(f"💾 Всего игроков: {len(статы)}")
+        строки.append(f"💰 Всего монет: {sum(д.get('мэлкоины',0) for д in статы.values())}")
+
+        текст_файла = "\n".join(строки)
+        имя_файла = f"players_{date.today()}.txt"
+
+        # Отправляем как файл
+        import io
+        файл = io.BytesIO(текст_файла.encode("utf-8"))
+        файл.name = имя_файла
+        bot.send_document(
+            chat_id,
+            файл,
+            caption=f"📊 Экспорт игроков — *{len(статы)} чел.*",
+            parse_mode="Markdown"
+        )
+
+        # Дополнительно JSON-файл с полными данными
+        json_файл = io.BytesIO(
+            json.dumps(статы, ensure_ascii=False, indent=2).encode("utf-8")
+        )
+        json_файл.name = f"players_{date.today()}.json"
+        bot.send_document(
+            chat_id,
+            json_файл,
+            caption="📦 Полные данные в JSON (для бэкапа)"
+        )
+
+    except Exception as e:
+        log.error(f"/экспорт error: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_callback(call):
     try:
