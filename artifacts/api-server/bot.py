@@ -154,16 +154,71 @@ init_db()
 # Остаётся в памяти всё время работы бота → команды отвечают мгновенно
 _КЭШСТАТОВ: dict = {}   # user_id -> data (живые данные)
 _ДБ_СНИМОК: dict = {}   # user_id -> json-строка последнего сохранения в БД
+_КЭШ_ЗАГРУЖЕН: bool = False  # флаг: кэш уже загружен (даже если 0 игроков)
+
+_БЭКАП_ФАЙЛ = "players_backup.json"
+
+def _сохранить_бэкап():
+    """Сохраняет всех игроков в JSON-файл — страховка от сброса БД."""
+    try:
+        with open(_БЭКАП_ФАЙЛ, "w", encoding="utf-8") as f:
+            json.dump(_КЭШСТАТОВ, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.error(f"Ошибка сохранения бэкапа: {e}")
+
+def _загрузить_бэкап() -> dict:
+    """Загружает игроков из JSON-файла если он есть."""
+    try:
+        if os.path.exists(_БЭКАП_ФАЙЛ):
+            with open(_БЭКАП_ФАЙЛ, "r", encoding="utf-8") as f:
+                данные = json.load(f)
+            log.info(f"Бэкап найден: {len(данные)} игроков 📂")
+            return данные
+    except Exception as e:
+        log.error(f"Ошибка чтения бэкапа: {e}")
+    return {}
+
+def _фоновый_бэкап():
+    """Автосохранение бэкапа каждые 5 минут."""
+    while True:
+        time.sleep(300)
+        if _КЭШСТАТОВ:
+            _сохранить_бэкап()
+
+_бэкап_поток = threading.Thread(target=_фоновый_бэкап, daemon=True, name="backup")
+_бэкап_поток.start()
 
 def _прогреть_кэш():
-    """Загружает всех игроков из БД в память при старте — один раз."""
+    """Загружает всех игроков из БД в память при старте — один раз.
+    Если БД пуста — восстанавливает из JSON-бэкапа."""
+    global _КЭШ_ЗАГРУЖЕН
     rows = _выполнить("SELECT user_id, data FROM players", fetch="all") or []
     for row in rows:
         uid = row["user_id"]
         data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
         _КЭШСТАТОВ[uid] = data
         _ДБ_СНИМОК[uid] = json.dumps(data, ensure_ascii=False, sort_keys=True)
-    log.info(f"Кэш игроков загружен: {len(_КЭШСТАТОВ)} игроков ✅")
+    # Если БД пуста — пробуем восстановить из бэкапа
+    if not _КЭШСТАТОВ:
+        бэкап = _загрузить_бэкап()
+        if бэкап:
+            for uid, data in бэкап.items():
+                _КЭШСТАТОВ[uid] = data
+                snap = json.dumps(data, ensure_ascii=False, sort_keys=True)
+                _ДБ_СНИМОК[uid] = snap
+                # Восстанавливаем в БД
+                _записать(
+                    "INSERT INTO players (user_id, data) VALUES (%s, %s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+                    (uid, snap)
+                )
+            log.info(f"Восстановлено из бэкапа: {len(_КЭШСТАТОВ)} игроков ✅")
+        else:
+            log.info("БД и бэкап пусты — новый старт")
+    else:
+        log.info(f"Кэш игроков загружен: {len(_КЭШСТАТОВ)} игроков ✅")
+        _сохранить_бэкап()  # сразу обновляем бэкап
+    _КЭШ_ЗАГРУЖЕН = True
 
 ОБНОВЛЕНИЯ = [
     {
@@ -692,18 +747,9 @@ def нейро_ответ(текст, имя):
 
 # ─── Работа с базой данных ───────────────────────────────────────────────────
 
-def _прогреть_кэш():
-    """Загружает всех игроков из БД в память. Вызывается один раз при старте."""
-    rows = _выполнить("SELECT user_id, data FROM players", fetch="all") or []
-    for row in rows:
-        uid = row["user_id"]
-        _КЭШСТАТОВ[uid] = row["data"]
-        _ДБ_СНИМОК[uid] = json.dumps(row["data"], ensure_ascii=False, sort_keys=True)
-    log.info(f"Кэш игроков загружен: {len(_КЭШСТАТОВ)} игроков")
-
 def загрузить_статы() -> dict:
     """Возвращает кэш игроков (без запроса к БД — мгновенно)."""
-    if not _КЭШСТАТОВ:
+    if not _КЭШ_ЗАГРУЖЕН:
         _прогреть_кэш()
     return _КЭШСТАТОВ
 
