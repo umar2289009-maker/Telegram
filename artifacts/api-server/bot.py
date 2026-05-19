@@ -755,6 +755,7 @@ def загрузить_статы() -> dict:
 
 def сохранить_статы(статы: dict):
     """Обновляет кэш и ставит изменения в фоновую очередь — мгновенно."""
+    были_изменения = False
     for user_id, data in статы.items():
         текущий_json = json.dumps(data, ensure_ascii=False, sort_keys=True)
         if текущий_json != _ДБ_СНИМОК.get(user_id):
@@ -765,6 +766,9 @@ def сохранить_статы(статы: dict):
                 "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
                 (user_id, текущий_json)
             )
+            были_изменения = True
+    if были_изменения:
+        _сохранить_бэкап()  # мгновенно пишем в файл при каждом изменении
 
 def получить_игрока(статы, user_id, имя=None):
     ключ = str(user_id)
@@ -1627,6 +1631,84 @@ def команда_экспорт(message):
 
     except Exception as e:
         log.error(f"/экспорт error: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
+# Ждём JSON-файл от Kolika для импорта
+_ждёт_импорт: set = set()
+
+@bot.message_handler(commands=["импорт"])
+def команда_импорт(message):
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        if not is_admin(user_id):
+            bot.send_message(chat_id, "❌ Только для Kolika 👑")
+            return
+        _ждёт_импорт.add(user_id)
+        bot.send_message(chat_id,
+            "📤 Отправь JSON-файл с игроками (тот что выдал /экспорт)\n\n"
+            "_Все текущие данные будут ДОПОЛНЕНЫ данными из файла._\n"
+            "Если игрок уже есть — его данные НЕ затрутся.",
+            parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"/импорт error: {e}")
+
+
+@bot.message_handler(content_types=["document"])
+def обработать_документ(message):
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        if user_id not in _ждёт_импорт:
+            return
+        if not is_admin(user_id):
+            _ждёт_импорт.discard(user_id)
+            return
+
+        doc = message.document
+        if not doc.file_name.endswith(".json"):
+            bot.send_message(chat_id, "❌ Нужен файл .json (из /экспорт)")
+            return
+
+        _ждёт_импорт.discard(user_id)
+
+        # Скачиваем файл
+        import io
+        файл_инфо = bot.get_file(doc.file_id)
+        скачан = bot.download_file(файл_инфо.file_path)
+        данные = json.loads(скачан.decode("utf-8"))
+
+        if not isinstance(данные, dict):
+            bot.send_message(chat_id, "❌ Неверный формат файла.")
+            return
+
+        статы = загрузить_статы()
+        добавлено = 0
+        пропущено = 0
+
+        for uid, игрок in данные.items():
+            if not isinstance(игрок, dict):
+                continue
+            if uid in статы:
+                пропущено += 1
+            else:
+                статы[uid] = игрок
+                добавлено += 1
+
+        сохранить_статы(статы)
+
+        bot.send_message(chat_id,
+            f"✅ *Импорт завершён!*\n\n"
+            f"➕ Добавлено новых игроков: *{добавлено}*\n"
+            f"⏭ Пропущено (уже есть): *{пропущено}*\n"
+            f"👥 Всего в базе: *{len(статы)}*",
+            parse_mode="Markdown")
+
+    except json.JSONDecodeError:
+        bot.send_message(message.chat.id, "❌ Файл повреждён или не является JSON.")
+    except Exception as e:
+        log.error(f"импорт документ error: {e}")
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 
