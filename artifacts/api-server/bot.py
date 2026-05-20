@@ -5,6 +5,8 @@ import time
 import logging
 import queue
 import threading
+import base64
+import urllib.request
 from datetime import date
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -157,6 +159,9 @@ _ДБ_СНИМОК: dict = {}   # user_id -> json-строка последне�
 _КЭШ_ЗАГРУЖЕН: bool = False  # флаг: кэш уже загружен (даже если 0 игроков)
 
 _БЭКАП_ФАЙЛ = "players_backup.json"
+_GITHUB_TOKEN = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+_GITHUB_REPO = "umar2289009-maker/Telegram"
+_GITHUB_BACKUP_PATH = "players_backup.json"
 
 def _сохранить_бэкап():
     """Сохраняет всех игроков в JSON-файл — страховка от сброса БД."""
@@ -166,24 +171,84 @@ def _сохранить_бэкап():
     except Exception as e:
         log.error(f"Ошибка сохранения бэкапа: {e}")
 
+def _скачать_бэкап_с_github() -> dict:
+    """Скачивает players_backup.json с GitHub если токен задан."""
+    if not _GITHUB_TOKEN:
+        return {}
+    try:
+        url = f"https://api.github.com/repos/{_GITHUB_REPO}/contents/{_GITHUB_BACKUP_PATH}"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"token {_GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            данные = json.loads(resp.read())
+        содержимое = base64.b64decode(данные["content"]).decode("utf-8")
+        игроки = json.loads(содержимое)
+        log.info(f"Бэкап скачан с GitHub: {len(игроки)} игроков ☁️")
+        with open(_БЭКАП_ФАЙЛ, "w", encoding="utf-8") as f:
+            json.dump(игроки, f, ensure_ascii=False, indent=2)
+        return игроки
+    except Exception as e:
+        log.warning(f"Не удалось скачать бэкап с GitHub: {e}")
+        return {}
+
+def _загрузить_на_github():
+    """Загружает players_backup.json на GitHub каждые 10 минут."""
+    if not _GITHUB_TOKEN or not os.path.exists(_БЭКАП_ФАЙЛ):
+        return
+    try:
+        with open(_БЭКАП_ФАЙЛ, "r", encoding="utf-8") as f:
+            содержимое = f.read()
+        закодировано = base64.b64encode(содержимое.encode("utf-8")).decode("ascii")
+        url = f"https://api.github.com/repos/{_GITHUB_REPO}/contents/{_GITHUB_BACKUP_PATH}"
+        headers = {
+            "Authorization": f"token {_GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json"
+        }
+        sha = ""
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                sha = json.loads(resp.read()).get("sha", "")
+        except Exception:
+            pass
+        тело_словарь = {"message": "Auto-export: player data backup", "content": закодировано}
+        if sha:
+            тело_словарь["sha"] = sha
+        тело = json.dumps(тело_словарь).encode("utf-8")
+        req = urllib.request.Request(url, data=тело, headers=headers, method="PUT")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+        log.info("Бэкап игроков загружен на GitHub ☁️✅")
+    except Exception as e:
+        log.warning(f"Ошибка загрузки бэкапа на GitHub: {e}")
+
 def _загрузить_бэкап() -> dict:
-    """Загружает игроков из JSON-файла если он есть."""
+    """Загружает игроков из локального файла, иначе — с GitHub."""
     try:
         if os.path.exists(_БЭКАП_ФАЙЛ):
             with open(_БЭКАП_ФАЙЛ, "r", encoding="utf-8") as f:
                 данные = json.load(f)
-            log.info(f"Бэкап найден: {len(данные)} игроков 📂")
-            return данные
+            if данные:
+                log.info(f"Бэкап найден локально: {len(данные)} игроков 📂")
+                return данные
     except Exception as e:
         log.error(f"Ошибка чтения бэкапа: {e}")
-    return {}
+    log.info("Локальный бэкап пуст — пробую GitHub ☁️")
+    return _скачать_бэкап_с_github()
 
 def _фоновый_бэкап():
-    """Автосохранение бэкапа каждые 5 минут."""
+    """Автосохранение бэкапа каждые 5 минут, загрузка на GitHub каждые 10 минут."""
+    цикл = 0
     while True:
         time.sleep(300)
         if _КЭШСТАТОВ:
             _сохранить_бэкап()
+            цикл += 1
+            if цикл % 2 == 0:
+                _загрузить_на_github()
 
 _бэкап_поток = threading.Thread(target=_фоновый_бэкап, daemon=True, name="backup")
 _бэкап_поток.start()
