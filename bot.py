@@ -5,6 +5,9 @@ import time
 import logging
 import queue
 import threading
+import urllib.request
+import urllib.error
+import base64
 from datetime import date
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
@@ -693,14 +696,107 @@ def нейро_ответ(текст, имя):
 
 # ─── Работа с базой данных ───────────────────────────────────────────────────
 
+# ─── GitHub бэкап игроков ─────────────────────────────────────────────────────
+
+_GH_TOKEN = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+_GH_REPO   = "umar2289009-maker/Telegram"
+_GH_FILE   = "players_backup.json"
+
+def _gh_get_sha():
+    if not _GH_TOKEN:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{_GH_REPO}/contents/{_GH_FILE}",
+            headers={"Authorization": f"token {_GH_TOKEN}"}
+        )
+        res = urllib.request.urlopen(req, timeout=10)
+        return json.loads(res.read()).get("sha")
+    except Exception:
+        return None
+
+def сохранить_на_github(данные: dict) -> bool:
+    """Загружает players_backup.json на GitHub. Возвращает True при успехе."""
+    if not _GH_TOKEN:
+        return False
+    try:
+        content = base64.b64encode(
+            json.dumps(данные, ensure_ascii=False, indent=2).encode()
+        ).decode()
+        sha = _gh_get_sha()
+        body = {"message": "Auto-backup players", "content": content}
+        if sha:
+            body["sha"] = sha
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{_GH_REPO}/contents/{_GH_FILE}",
+            data=json.dumps(body).encode(), method="PUT",
+            headers={"Authorization": f"token {_GH_TOKEN}", "Content-Type": "application/json"}
+        )
+        urllib.request.urlopen(req, timeout=15)
+        log.info(f"✅ Бэкап на GitHub: {len(данные)} игроков")
+        return True
+    except Exception as e:
+        log.error(f"❌ GitHub бэкап ошибка: {e}")
+        return False
+
+def загрузить_с_github() -> dict:
+    """Скачивает players_backup.json с GitHub. Возвращает dict или {}."""
+    if not _GH_TOKEN:
+        return {}
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{_GH_REPO}/contents/{_GH_FILE}",
+            headers={"Authorization": f"token {_GH_TOKEN}"}
+        )
+        res = urllib.request.urlopen(req, timeout=10)
+        данные = json.loads(res.read())
+        content = base64.b64decode(данные["content"]).decode()
+        result = json.loads(content)
+        log.info(f"✅ Загружен GitHub бэкап: {len(result)} игроков")
+        return result
+    except Exception as e:
+        log.error(f"❌ Ошибка загрузки GitHub бэкапа: {e}")
+        return {}
+
+def _авто_бэкап_поток():
+    """Фоновый поток: бэкапит игроков на GitHub каждые 10 минут."""
+    while True:
+        time.sleep(600)
+        try:
+            if _КЭШСТАТОВ:
+                сохранить_на_github(dict(_КЭШСТАТОВ))
+        except Exception as e:
+            log.error(f"Авто-бэкап ошибка: {e}")
+
+threading.Thread(target=_авто_бэкап_поток, daemon=True, name="gh-backup").start()
+
+# ─── Загрузка кэша ────────────────────────────────────────────────────────────
+
 def _прогреть_кэш():
-    """Загружает всех игроков из БД в память. Вызывается один раз при старте."""
+    """Загружает всех игроков из БД в память. Если БД пустая — восстанавливает из GitHub."""
     rows = _выполнить("SELECT user_id, data FROM players", fetch="all") or []
-    for row in rows:
-        uid = row["user_id"]
-        _КЭШСТАТОВ[uid] = row["data"]
-        _ДБ_СНИМОК[uid] = json.dumps(row["data"], ensure_ascii=False, sort_keys=True)
-    log.info(f"Кэш игроков загружен: {len(_КЭШСТАТОВ)} игроков")
+    if rows:
+        for row in rows:
+            uid = row["user_id"]
+            _КЭШСТАТОВ[uid] = row["data"]
+            _ДБ_СНИМОК[uid] = json.dumps(row["data"], ensure_ascii=False, sort_keys=True)
+        log.info(f"Кэш игроков загружен из БД: {len(_КЭШСТАТОВ)} игроков")
+    else:
+        log.warning("⚠️ БД пустая — пробую восстановить из GitHub бэкапа...")
+        gh_данные = загрузить_с_github()
+        if gh_данные:
+            for uid, data in gh_данные.items():
+                _КЭШСТАТОВ[uid] = data
+                snap = json.dumps(data, ensure_ascii=False, sort_keys=True)
+                _ДБ_СНИМОК[uid] = snap
+                _записать(
+                    "INSERT INTO players (user_id, data) VALUES (%s, %s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+                    (uid, snap)
+                )
+            log.info(f"✅ Восстановлено из GitHub: {len(_КЭШСТАТОВ)} игроков")
+        else:
+            log.info("Кэш игроков загружен: 0 игроков")
 
 def загрузить_статы() -> dict:
     """Возвращает кэш игроков (без запроса к БД — мгновенно)."""
@@ -3338,6 +3434,51 @@ def бот_добавлен(update):
                 parse_mode="Markdown")
     except Exception as e:
         log.error(f"my_chat_member error: {e}")
+
+# ─── Экспорт / Импорт (только Kolik) ─────────────────────────────────────────
+
+@bot.message_handler(commands=["экспорт", "export"])
+def cmd_экспорт(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        bot.send_message(message.chat.id, "❌ Только для Kolik")
+        return
+    bot.send_message(message.chat.id, "⏳ Сохраняю данные на GitHub...")
+    данные = dict(_КЭШСТАТОВ)
+    ok = сохранить_на_github(данные)
+    if ok:
+        bot.send_message(message.chat.id,
+            f"✅ Экспорт готов!\n"
+            f"👥 Игроков: {len(данные)}\n"
+            f"💾 Сохранено на GitHub → players_backup.json")
+    else:
+        bot.send_message(message.chat.id,
+            "❌ Ошибка экспорта. Проверь GITHUB_PERSONAL_ACCESS_TOKEN в секретах.")
+
+@bot.message_handler(commands=["импорт", "import"])
+def cmd_импорт(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        bot.send_message(message.chat.id, "❌ Только для Kolik")
+        return
+    bot.send_message(message.chat.id, "⏳ Загружаю данные с GitHub...")
+    gh_данные = загрузить_с_github()
+    if not gh_данные:
+        bot.send_message(message.chat.id, "❌ Не удалось загрузить бэкап с GitHub.")
+        return
+    for uid, data in gh_данные.items():
+        _КЭШСТАТОВ[uid] = data
+        snap = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        _ДБ_СНИМОК[uid] = snap
+        _записать(
+            "INSERT INTO players (user_id, data) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+            (uid, snap)
+        )
+    bot.send_message(message.chat.id,
+        f"✅ Импорт завершён!\n"
+        f"👥 Восстановлено игроков: {len(gh_данные)}\n"
+        f"🔄 Все данные загружены в БД и память.")
 
 # ─── Запуск ──────────────────────────────────────────────────────────────────
 
