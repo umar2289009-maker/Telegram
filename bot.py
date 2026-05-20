@@ -3552,6 +3552,20 @@ def _запустить_http():
 
 threading.Thread(target=_запустить_http, daemon=True, name="http-health").start()
 
+def _самопинг():
+    """Пингует свой же healthcheck каждые 30 секунд — бот не засыпает."""
+    time.sleep(10)
+    port = int(os.environ.get("BOT_HEALTH_PORT", 8099))
+    url = f"http://localhost:{port}/"
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=5)
+        except Exception:
+            pass
+        time.sleep(30)
+
+threading.Thread(target=_самопинг, daemon=True, name="self-ping").start()
+
 log.info("Бот запущен 🤖")
 while True:
     try:
