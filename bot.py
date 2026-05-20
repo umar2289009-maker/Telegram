@@ -771,6 +771,50 @@ def _авто_бэкап_поток():
 
 threading.Thread(target=_авто_бэкап_поток, daemon=True, name="gh-backup").start()
 
+def _пушнуть_файл_на_github(путь_файла: str, имя_файла_в_репо: str, сообщение: str) -> bool:
+    """Загружает произвольный файл на GitHub. Возвращает True при успехе."""
+    if not _GH_TOKEN:
+        return False
+    try:
+        with open(путь_файла, "rb") as f:
+            content = base64.b64encode(f.read()).decode()
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{_GH_REPO}/contents/{имя_файла_в_репо}",
+                headers={"Authorization": f"token {_GH_TOKEN}", "User-Agent": "bot"}
+            )
+            sha = json.loads(urllib.request.urlopen(req, timeout=10).read()).get("sha")
+        except Exception:
+            sha = None
+        body = {"message": сообщение, "content": content}
+        if sha:
+            body["sha"] = sha
+        req2 = urllib.request.Request(
+            f"https://api.github.com/repos/{_GH_REPO}/contents/{имя_файла_в_репо}",
+            data=json.dumps(body).encode(), method="PUT",
+            headers={"Authorization": f"token {_GH_TOKEN}", "Content-Type": "application/json", "User-Agent": "bot"}
+        )
+        urllib.request.urlopen(req2, timeout=20)
+        return True
+    except Exception as e:
+        log.error(f"❌ Ошибка пуша {имя_файла_в_репо}: {e}")
+        return False
+
+def _авто_пуш_кода_поток():
+    """Фоновый поток: пушит bot.py на GitHub каждые 30 минут."""
+    time.sleep(120)  # первый пуш через 2 минуты после старта
+    while True:
+        try:
+            бот_путь = os.path.abspath(__file__)
+            ok = _пушнуть_файл_на_github(бот_путь, "bot.py", "Auto-push bot.py")
+            if ok:
+                log.info("✅ Автопуш bot.py на GitHub выполнен")
+        except Exception as e:
+            log.error(f"Автопуш ошибка: {e}")
+        time.sleep(1800)  # каждые 30 минут
+
+threading.Thread(target=_авто_пуш_кода_поток, daemon=True, name="code-autopush").start()
+
 # ─── Загрузка кэша ────────────────────────────────────────────────────────────
 
 def _прогреть_кэш():
