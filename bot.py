@@ -158,6 +158,7 @@ init_db()
 # Остаётся в памяти всё время работы бота → команды отвечают мгновенно
 _КЭШСТАТОВ: dict = {}   # user_id -> data (живые данные)
 _ДБ_СНИМОК: dict = {}   # user_id -> json-строка последнего сохранения в БД
+_КЭШ_ЛОК = threading.Lock()  # защита от race condition при многопоточной записи
 
 def _прогреть_кэш():
     """Загружает всех игроков из БД в память при старте — один раз."""
@@ -806,16 +807,17 @@ def загрузить_статы() -> dict:
 
 def сохранить_статы(статы: dict):
     """Обновляет кэш и ставит изменения в фоновую очередь — мгновенно."""
-    for user_id, data in статы.items():
-        текущий_json = json.dumps(data, ensure_ascii=False, sort_keys=True)
-        if текущий_json != _ДБ_СНИМОК.get(user_id):
-            _ДБ_СНИМОК[user_id] = текущий_json
-            _КЭШСТАТОВ[user_id] = data
-            _записать(
-                "INSERT INTO players (user_id, data) VALUES (%s, %s) "
-                "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
-                (user_id, текущий_json)
-            )
+    with _КЭШ_ЛОК:
+        for user_id, data in статы.items():
+            текущий_json = json.dumps(data, ensure_ascii=False, sort_keys=True)
+            if текущий_json != _ДБ_СНИМОК.get(user_id):
+                _ДБ_СНИМОК[user_id] = текущий_json
+                _КЭШСТАТОВ[user_id] = data
+                _записать(
+                    "INSERT INTO players (user_id, data) VALUES (%s, %s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+                    (user_id, текущий_json)
+                )
 
 def получить_игрока(статы, user_id, имя=None):
     ключ = str(user_id)
@@ -876,13 +878,42 @@ def сохранить_имя(user_id, имя):
     игрок = получить_игрока(статы, user_id, имя)
     игрок["имя"] = имя
     # Если переименовался в Kolik и ещё не был сидирован
-    if имя.lower() == "kolik" and игрок.get("мэлкоины", 0) < 999999:
-        _сид_kolik(игрок)
+    if имя.lower() == "kolik":
+        зарегистрировать_admin_id(int(user_id))
+        if игрок.get("мэлкоины", 0) < 999999:
+            _сид_kolik(игрок)
     сохранить_статы(статы)
 
 # ─── Админ ───────────────────────────────────────────────────────────────────
 
+# Безопасная проверка: по user_id из БД (имя легко подделать, user_id — нет)
+_ADMIN_USER_ID: int | None = None
+
+def _найти_admin_id():
+    """При старте ищем числовой user_id игрока с именем kolik."""
+    global _ADMIN_USER_ID
+    try:
+        статы = загрузить_статы()
+        for uid, данные in статы.items():
+            if данные.get("имя", "").lower() == "kolik":
+                _ADMIN_USER_ID = int(uid)
+                log.info(f"Admin user_id найден: {_ADMIN_USER_ID}")
+                return
+    except Exception as e:
+        log.error(f"Ошибка поиска admin_id: {e}")
+
+def зарегистрировать_admin_id(user_id: int):
+    """Вызывается когда kolik впервые регистрируется."""
+    global _ADMIN_USER_ID
+    if _ADMIN_USER_ID is None:
+        _ADMIN_USER_ID = user_id
+        log.info(f"Admin зарегистрирован: user_id={user_id}")
+
 def is_admin(user_id):
+    """Проверяем по числовому user_id — его нельзя подделать сменой ника."""
+    if _ADMIN_USER_ID is not None:
+        return int(user_id) == _ADMIN_USER_ID
+    # Фолбэк: если admin ещё не зарегистрирован, проверяем по имени
     статы = загрузить_статы()
     игрок = статы.get(str(user_id), {})
     return игрок.get("имя", "").lower() == "kolik"
@@ -1068,6 +1099,9 @@ def обновить_стат(chat_id, user_id, имя, выжил, выстре
     игрок = получить_игрока(статы, user_id, имя)
     игрок["имя"] = имя
     игрок["игр"] += 1
+    # Обновляем рекорд один раз здесь
+    if выстрелов > игрок.get("рекорд", 0):
+        игрок["рекорд"] = выстрелов
     if выжил:
         игрок["выжил"] += 1
         награда = 50 * выстрелов
@@ -1078,14 +1112,7 @@ def обновить_стат(chat_id, user_id, имя, выжил, выстре
         except Exception:
             pass
     else:
-        if выстрелов > игрок.get("рекорд", 0):
-            игрок["рекорд"] = выстрелов
         сохранить_статы(статы)
-    if выстрелов > игрок.get("рекорд", 0):
-        статы2 = загрузить_статы()
-        игрок2 = статы2.get(str(user_id), {})
-        игрок2["рекорд"] = выстрелов
-        сохранить_статы(статы2)
     проверить_ачивки_рулетка(chat_id, user_id, имя, выжил, выстрелов)
 
 # ─── Клавиатуры ──────────────────────────────────────────────────────────────
@@ -3502,6 +3529,7 @@ def сидировать_kolik_если_есть():
 
 _прогреть_кэш()
 сидировать_kolik_если_есть()
+_найти_admin_id()
 _прогреть_рулетки()
 _прогреть_дуэли()
 _прогреть_кто_ты()
@@ -3517,7 +3545,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def _запустить_http():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("BOT_HEALTH_PORT", 8099))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     log.info(f"HTTP healthcheck слушает порт {port} ✅")
     server.serve_forever()
