@@ -1699,6 +1699,56 @@ def команда_экспорт(message):
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 
+@bot.message_handler(commands=["статус"])
+def команда_статус(message):
+    try:
+        if not is_admin(message.from_user.id):
+            bot.send_message(message.chat.id, "❌ Только для Kolika 👑")
+            return
+
+        статы = загрузить_статы()
+        игроков = len(статы)
+        монет_всего = sum(д.get("мэлкоины", 0) for д in статы.values())
+
+        # Проверка БД
+        try:
+            _выполнить("SELECT 1", fetch="one")
+            бд_статус = "✅ подключена"
+        except Exception:
+            бд_статус = "❌ недоступна"
+
+        # Инфо о локальном бэкапе
+        if os.path.exists(_БЭКАП_ФАЙЛ):
+            размер = os.path.getsize(_БЭКАП_ФАЙЛ)
+            изм = os.path.getmtime(_БЭКАП_ФАЙЛ)
+            import datetime
+            время_бэкапа = datetime.datetime.fromtimestamp(изм).strftime("%H:%M:%S %d.%m.%Y")
+            бэкап_статус = f"✅ {время_бэкапа} ({размер//1024} КБ)"
+        else:
+            бэкап_статус = "❌ файл отсутствует"
+
+        # GitHub статус
+        github_статус = "✅ настроен" if _GITHUB_TOKEN else "❌ токен не задан"
+
+        текст = (
+            f"📊 *Статус бота*\n"
+            f"{'─'*30}\n"
+            f"🤖 Бот: ✅ работает\n"
+            f"🗄 БД: {бд_статус}\n"
+            f"☁️ GitHub бэкап: {github_статус}\n"
+            f"{'─'*30}\n"
+            f"👥 Игроков в кэше: *{игроков}*\n"
+            f"💰 Монет всего: *{монет_всего:,}*\n"
+            f"{'─'*30}\n"
+            f"💾 Локальный бэкап:\n{бэкап_статус}\n"
+        )
+        bot.send_message(message.chat.id, текст, parse_mode="Markdown")
+
+    except Exception as e:
+        log.error(f"/статус error: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
 # Ждём JSON-файл от Kolika для импорта
 _ждёт_импорт: set = set()
 
