@@ -145,6 +145,12 @@ def init_db():
             last_name TEXT NOT NULL DEFAULT ''
         )
     """)
+    _выполнить("""
+        CREATE TABLE IF NOT EXISTS autoreplies (
+            keyword TEXT PRIMARY KEY,
+            responses JSONB NOT NULL DEFAULT '[]'
+        )
+    """)
     log.info("БД инициализирована ✅")
 
 init_db()
@@ -637,6 +643,48 @@ def нейро_ответ(текст, имя):
     if random.random() < 0.2 and имя:
         ответ = f"{имя} {ответ}"
     return ответ
+
+# ─── Авторесчик ───────────────────────────────────────────────────────────────
+# Кастомные ответы, заданные через /авторесч (хранятся в БД)
+_АВТОРЕСЧ_КАСТОМ: dict = {}   # keyword → [ответ1, ответ2, ...]
+_авторесч_lock = threading.Lock()
+
+def _загрузить_авторесч():
+    """Загружает кастомные авторесч-триггеры из БД в память."""
+    global _АВТОРЕСЧ_КАСТОМ
+    rows = _выполнить("SELECT keyword, responses FROM autoreplies", fetch="all") or []
+    with _авторесч_lock:
+        _АВТОРЕСЧ_КАСТОМ = {row["keyword"]: row["responses"] for row in rows}
+    log.info(f"Авторесч загружен: {len(_АВТОРЕСЧ_КАСТОМ)} триггеров ✅")
+
+def _авторесч_ответ(текст: str) -> str | None:
+    """Проверяет текст на совпадение с триггерами.
+    Возвращает случайный ответ или None если совпадений нет.
+    Сначала кастомные (приоритет), потом встроенные НЕЙРО_КЛЮЧИ.
+    """
+    тч = текст.lower().strip()
+    # 1. Кастомные триггеры (точное вхождение слова/фразы)
+    with _авторесч_lock:
+        for ключ, ответы in _АВТОРЕСЧ_КАСТОМ.items():
+            if ключ in тч and ответы:
+                return random.choice(ответы)
+    # 2. Встроенные НЕЙРО_КЛЮЧИ
+    for ключ, ответы in НЕЙРО_КЛЮЧИ.items():
+        if ключ in тч:
+            return random.choice(ответы)
+    return None
+
+def _сохранить_авторесч_в_бд(ключ: str, ответы: list):
+    """Сохраняет один триггер в БД."""
+    _записать(
+        "INSERT INTO autoreplies (keyword, responses) VALUES (%s, %s) "
+        "ON CONFLICT (keyword) DO UPDATE SET responses = EXCLUDED.responses",
+        (ключ, json.dumps(ответы, ensure_ascii=False))
+    )
+
+def _удалить_авторесч_из_бд(ключ: str):
+    """Удаляет триггер из БД."""
+    _записать("DELETE FROM autoreplies WHERE keyword = %s", (ключ,))
 
 # ─── Магазин ──────────────────────────────────────────────────────────────────
 
@@ -3289,10 +3337,18 @@ def ответ(message):
             упомянут = бот_упомянут(message)
             is_cmd = текст.startswith("/")
             if not упомянут and not is_cmd:
-                # Нейро-хам: отвечаем на ~40% сообщений в группе
+                имя_г = получить_имя(user_id) or message.from_user.first_name or "лох"
+                # Авторесч: при совпадении слова — ВСЕГДА отвечаем (100%)
+                ответ_ав = _авторесч_ответ(текст)
+                if ответ_ав is not None:
+                    try:
+                        bot.reply_to(message, ответ_ав)
+                    except Exception:
+                        bot.send_message(chat_id, ответ_ав)
+                    return
+                # Нейро-хам: на прочие сообщения отвечаем на ~40%
                 if random.random() > 0.40:
                     return
-                имя_г = получить_имя(user_id) or message.from_user.first_name or "лох"
                 ответ_г = нейро_ответ(текст, имя_г)
                 try:
                     bot.reply_to(message, ответ_г)
@@ -3475,6 +3531,13 @@ def ответ(message):
                 отметить_пасхалку(chat_id, user_id, имя, ключ_п)
                 return
 
+        # Авторесч в личке — отвечаем на обычные сообщения всегда
+        ответ_лк = _авторесч_ответ(текст_чистый)
+        if ответ_лк is not None:
+            bot.send_message(chat_id, ответ_лк)
+        else:
+            bot.send_message(chat_id, нейро_ответ(текст_чистый, имя))
+
     except Exception as e:
         log.error(f"ответ handler error: {e}")
 
@@ -3505,6 +3568,94 @@ def бот_добавлен(update):
                 parse_mode="Markdown")
     except Exception as e:
         log.error(f"my_chat_member error: {e}")
+
+# ─── Авторесч команды (только Kolik) ─────────────────────────────────────────
+
+@bot.message_handler(commands=["авторесч", "autoreply"])
+def cmd_авторесч(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        bot.send_message(message.chat.id, "❌ Только для Kolik")
+        return
+
+    chat_id = message.chat.id
+    части = message.text.strip().split(maxsplit=1)
+    if len(части) < 2:
+        bot.send_message(chat_id,
+            "📖 *Авторесч — управление авто-ответами*\n\n"
+            "*Добавить триггер:*\n"
+            "`/авторесч добавить слово | ответ1 | ответ2 | ответ3`\n\n"
+            "*Удалить триггер:*\n"
+            "`/авторесч удалить слово`\n\n"
+            "*Список всех триггеров:*\n"
+            "`/авторесч список`\n\n"
+            "💡 *Пример:*\n"
+            "`/авторесч добавить норм | и чё норм? | ага норм конечно | норм это хорошо`",
+            parse_mode="Markdown")
+        return
+
+    подкоманда = части[1].split(maxsplit=1)
+    действие = подкоманда[0].lower()
+    аргумент = подкоманда[1].strip() if len(подкоманда) > 1 else ""
+
+    if действие == "список":
+        with _авторесч_lock:
+            кастом = dict(_АВТОРЕСЧ_КАСТОМ)
+        if not кастом:
+            bot.send_message(chat_id,
+                "📋 *Кастомных триггеров нет*\n\n"
+                f"Встроенных триггеров (НЕЙРО_КЛЮЧИ): {len(НЕЙРО_КЛЮЧИ)}\n"
+                "Чтобы добавить: `/авторесч добавить слово | ответ1 | ответ2`",
+                parse_mode="Markdown")
+            return
+        строки = [f"📋 *Кастомные триггеры ({len(кастом)}):*\n"]
+        for ключ, ответы in кастом.items():
+            варианты = " | ".join(ответы[:3])
+            if len(ответы) > 3:
+                варианты += f" (+ ещё {len(ответы)-3})"
+            строки.append(f"• `{ключ}` → {варианты}")
+        bot.send_message(chat_id, "\n".join(строки), parse_mode="Markdown")
+
+    elif действие == "добавить":
+        if not аргумент or "|" not in аргумент:
+            bot.send_message(chat_id,
+                "❌ Формат: `/авторесч добавить слово | ответ1 | ответ2`\n"
+                "Нужно хотя бы одно `|` для разделения слова и ответов",
+                parse_mode="Markdown")
+            return
+        части_доб = [p.strip() for p in аргумент.split("|")]
+        ключ = части_доб[0].lower()
+        ответы = [r for r in части_доб[1:] if r]
+        if not ключ or not ответы:
+            bot.send_message(chat_id, "❌ Пустое слово или нет ответов.")
+            return
+        with _авторесч_lock:
+            _АВТОРЕСЧ_КАСТОМ[ключ] = ответы
+        _сохранить_авторесч_в_бд(ключ, ответы)
+        варианты = "\n".join(f"  • {r}" for r in ответы)
+        bot.send_message(chat_id,
+            f"✅ Триггер добавлен!\n\n"
+            f"🔑 Слово: `{ключ}`\n"
+            f"💬 Варианты ответов ({len(ответы)} шт):\n{варианты}\n\n"
+            f"Теперь когда кто-то напишет «{ключ}» — бот ответит одним из них рандомно.",
+            parse_mode="Markdown")
+
+    elif действие == "удалить":
+        ключ = аргумент.lower().strip()
+        with _авторесч_lock:
+            if ключ not in _АВТОРЕСЧ_КАСТОМ:
+                bot.send_message(chat_id, f"❌ Триггер `{ключ}` не найден в кастомных.\n"
+                    "Посмотри список: `/авторесч список`", parse_mode="Markdown")
+                return
+            del _АВТОРЕСЧ_КАСТОМ[ключ]
+        _удалить_авторесч_из_бд(ключ)
+        bot.send_message(chat_id, f"🗑 Триггер `{ключ}` удалён.", parse_mode="Markdown")
+
+    else:
+        bot.send_message(chat_id,
+            "❌ Неизвестная команда. Используй:\n"
+            "`/авторесч добавить` / `удалить` / `список`",
+            parse_mode="Markdown")
 
 # ─── Экспорт / Импорт (только Kolik) ─────────────────────────────────────────
 
@@ -3579,6 +3730,7 @@ _прогреть_дуэли()
 _прогреть_кто_ты()
 _прогреть_лох_дня()
 _прогреть_события()
+_загрузить_авторесч()
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
