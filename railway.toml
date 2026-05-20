@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python3 artifacts/api-server/bot.py"
+restartPolicyType = "always"
