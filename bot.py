@@ -890,10 +890,11 @@ def is_admin(user_id):
     # Проверка по хардкодному user_id
     if int(user_id) == _ADMIN_USER_ID:
         return True
-    # Запасная проверка по имени в БД (на случай если user_id изменился)
+    # Запасная проверка по имени в БД
     статы = загрузить_статы()
     игрок = статы.get(str(user_id), {})
-    return игрок.get("имя", "").lower() == "kolik"
+    имя = игрок.get("имя", "").lower()
+    return имя in ("kolik", "4")
 
 def кнопки_админа():
     markup = InlineKeyboardMarkup()
