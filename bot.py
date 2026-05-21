@@ -152,6 +152,7 @@ init_db()
 # Краткосрочное состояние (ОК в памяти — теряется только при рестарте, не критично)
 ждёт_имя  = {}
 ждёт_админ = {}  # user_id -> {"действие": str, "chat_id": int}
+ждёт_пароль_админ = {}  # user_id -> chat_id (ожидает ввод пароля для /админ)
 казик = {}  # chat_id -> blackjack state (краткосрочное, не требует персистентности)
 
 # Постоянный кэш игроков — загружается из БД один раз при старте
@@ -882,10 +883,11 @@ def сохранить_имя(user_id, имя):
 
 # ─── Админ ───────────────────────────────────────────────────────────────────
 
+_ADMIN_USER_ID: int = 8020976477   # Telegram user_id Kolika — нельзя подделать
+_ADMIN_ПАРОЛЬ: str  = "мэлкоин2025"  # пароль для входа в /админ
+
 def is_admin(user_id):
-    статы = загрузить_статы()
-    игрок = статы.get(str(user_id), {})
-    return игрок.get("имя", "").lower() == "kolik"
+    return int(user_id) == _ADMIN_USER_ID
 
 def кнопки_админа():
     markup = InlineKeyboardMarkup()
@@ -1569,11 +1571,10 @@ def команда_админ(message):
         if not is_admin(user_id):
             bot.send_message(chat_id, "👀 Иди отсюда, тут ничего нет.")
             return
+        ждёт_пароль_админ[user_id] = chat_id
         bot.send_message(chat_id,
-            "👑 *АДМИН-ПАНЕЛЬ* 👑\n\n"
-            "Добро пожаловать, Колик.\n"
-            "Выбери действие:",
-            parse_mode="Markdown", reply_markup=кнопки_админа())
+            "🔐 *Введи пароль для входа в админ-панель:*",
+            parse_mode="Markdown")
     except Exception as e:
         log.error(f"/админ error: {e}")
 
@@ -3231,6 +3232,20 @@ def ответ(message):
 
         текст_чистый = текст.replace(f"@{BOT_INFO.username.lower()}", "").strip()
 
+        # Ожидание пароля для /админ
+        if user_id in ждёт_пароль_админ:
+            ввод_пароль = message.text.strip()
+            chat_id_админ = ждёт_пароль_админ.pop(user_id)
+            if ввод_пароль == _ADMIN_ПАРОЛЬ:
+                bot.send_message(chat_id_админ,
+                    "👑 *АДМИН-ПАНЕЛЬ* 👑\n\n"
+                    "Добро пожаловать, Колик.\n"
+                    "Выбери действие:",
+                    parse_mode="Markdown", reply_markup=кнопки_админа())
+            else:
+                bot.send_message(chat_id_админ, "❌ Неверный пароль. Иди нафиг. 💀")
+            return
+
         # Ожидание admin-ввода
         if ждёт_админ.get(user_id):
             if not is_admin(user_id):
@@ -3241,9 +3256,9 @@ def ответ(message):
                 ввод = message.text.strip()
                 try:
                     if действие in ("дать_монеты", "отнять_монеты"):
-                        части = ввод.split(maxsplit=1)
+                        части = ввод.rsplit(maxsplit=1)
                         if len(части) != 2:
-                            bot.send_message(chat_id, "❌ Формат: `ник сумма`", parse_mode="Markdown")
+                            bot.send_message(chat_id, "❌ Формат: `ник сумма`\nПример: `Иван Петров 500`", parse_mode="Markdown")
                         else:
                             ник, сумма_str = части
                             uid, д, статы = найти_игрока_по_нику(ник)
@@ -3259,9 +3274,9 @@ def ответ(message):
                                 bot.send_message(chat_id, f"✅ *{ник}*: {знак}{сумма} мэлкоинов. Итого: {д['мэлкоины']}🪙", parse_mode="Markdown")
 
                     elif действие == "дать_титул":
-                        части = ввод.split(maxsplit=1)
+                        части = ввод.rsplit(maxsplit=1)
                         if len(части) != 2:
-                            bot.send_message(chat_id, "❌ Формат: `ник титул`", parse_mode="Markdown")
+                            bot.send_message(chat_id, "❌ Формат: `ник титул`\nПример: `Иван Петров бохач`", parse_mode="Markdown")
                         else:
                             ник, титул = части[0], части[1].lower()
                             uid, д, статы = найти_игрока_по_нику(ник)
@@ -3278,9 +3293,9 @@ def ответ(message):
                                 bot.send_message(chat_id, f"✅ *{ник}* получил титул {emoji} *{титул.upper()}*!", parse_mode="Markdown")
 
                     elif действие == "дать_ачивку":
-                        части = ввод.split(maxsplit=1)
+                        части = ввод.rsplit(maxsplit=1)
                         if len(части) != 2:
-                            bot.send_message(chat_id, "❌ Формат: `ник ачивка_id`", parse_mode="Markdown")
+                            bot.send_message(chat_id, "❌ Формат: `ник ачивка_id`\nПример: `Иван Петров легенда`", parse_mode="Markdown")
                         else:
                             ник, ачивка = части[0], части[1].lower()
                             uid, д, статы = найти_игрока_по_нику(ник)
