@@ -3214,6 +3214,20 @@ def ответ(message):
         user_id = message.from_user.id
         текст = message.text.lower().strip()
 
+        # Ожидание пароля для /админ — проверяем ДО фильтра группы
+        if user_id in ждёт_пароль_админ:
+            ввод_пароль = message.text.strip()
+            chat_id_админ = ждёт_пароль_админ.pop(user_id)
+            if ввод_пароль == _ADMIN_ПАРОЛЬ:
+                bot.send_message(chat_id_админ,
+                    "👑 *АДМИН-ПАНЕЛЬ* 👑\n\n"
+                    "Добро пожаловать, Колик.\n"
+                    "Выбери действие:",
+                    parse_mode="Markdown", reply_markup=кнопки_админа())
+            else:
+                bot.send_message(chat_id_админ, "❌ Неверный пароль. Иди нафиг. 💀")
+            return
+
         if в_группе(message):
             зарегистрировать_чат(chat_id, message.chat.title)
             упомянут = бот_упомянут(message)
@@ -3232,7 +3246,7 @@ def ответ(message):
 
         текст_чистый = текст.replace(f"@{BOT_INFO.username.lower()}", "").strip()
 
-        # Ожидание пароля для /админ
+        # Ожидание пароля для /админ (личка — дублируем для надёжности)
         if user_id in ждёт_пароль_админ:
             ввод_пароль = message.text.strip()
             chat_id_админ = ждёт_пароль_админ.pop(user_id)
