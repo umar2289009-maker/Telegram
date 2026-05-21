@@ -1575,9 +1575,6 @@ def команда_админ(message):
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id
-        if not is_admin(user_id):
-            bot.send_message(chat_id, "👀 Иди отсюда, тут ничего нет.")
-            return
         ждёт_пароль_админ[user_id] = chat_id
         bot.send_message(chat_id,
             "🔐 *Введи пароль для входа в админ-панель:*",
