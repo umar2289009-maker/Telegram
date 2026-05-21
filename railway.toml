@@ -1,7 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "python3 bot.py"
+startCommand = "pip install pyTelegramBotAPI psycopg2-binary requests && python3 bot.py"
 restartPolicyType = "always"
