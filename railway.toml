@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "pip install pyTelegramBotAPI psycopg2-binary requests && python3 artifacts/api-server/bot.py"
+startCommand = "python3 bot.py"
 restartPolicyType = "always"
