@@ -10,6 +10,7 @@ import urllib.error
 import base64
 from datetime import date
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from typing import Optional
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
@@ -657,7 +658,7 @@ def _загрузить_авторесч():
         _АВТОРЕСЧ_КАСТОМ = {row["keyword"]: row["responses"] for row in rows}
     log.info(f"Авторесч загружен: {len(_АВТОРЕСЧ_КАСТОМ)} триггеров ✅")
 
-def _авторесч_ответ(текст: str) -> str | None:
+def _авторесч_ответ(текст: str) -> Optional[str]:
     """Проверяет текст на совпадение с триггерами.
     Возвращает случайный ответ или None если совпадений нет.
     Сначала кастомные (приоритет), потом встроенные НЕЙРО_КЛЮЧИ.
@@ -979,7 +980,7 @@ def сохранить_имя(user_id, имя):
 # ─── Админ ───────────────────────────────────────────────────────────────────
 
 # Безопасная проверка: по user_id из БД (имя легко подделать, user_id — нет)
-_ADMIN_USER_ID: int | None = None
+_ADMIN_USER_ID: Optional[int] = None
 
 def _найти_admin_id():
     """При старте ищем числовой user_id игрока с именем kolik."""
