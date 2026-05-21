@@ -887,7 +887,13 @@ _ADMIN_USER_ID: int = 8020976477   # Telegram user_id Kolika — нельзя п
 _ADMIN_ПАРОЛЬ: str  = "мэлкоин2025"  # пароль для входа в /админ
 
 def is_admin(user_id):
-    return int(user_id) == _ADMIN_USER_ID
+    # Проверка по хардкодному user_id
+    if int(user_id) == _ADMIN_USER_ID:
+        return True
+    # Запасная проверка по имени в БД (на случай если user_id изменился)
+    статы = загрузить_статы()
+    игрок = статы.get(str(user_id), {})
+    return игрок.get("имя", "").lower() == "kolik"
 
 def кнопки_админа():
     markup = InlineKeyboardMarkup()
